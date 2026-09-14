@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.obj
+*.exp
+*.lib
+*.pdb
+*.i64
+*.run
+work_*/
+*.exe
+!evidence/*.exe

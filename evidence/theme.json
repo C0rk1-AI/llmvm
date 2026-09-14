@@ -1,0 +1,26 @@
+{
+ "theme": "aspack",
+ "kind": "packer",
+ "blended": [
+  "aspack"
+ ],
+ "sections": {
+  ".text": ".aspack",
+  ".rdata": ".adata",
+  ".data": ".aspack2",
+  ".rsrc": ".aspack3",
+  ".reloc": ".rsrc",
+  ".idata": ".idata",
+  ".pdata": ".aspack4",
+  ".bss": ".aspack5"
+ },
+ "exports": [
+  "lzx_decode_frame=dec_md5_mix",
+  "aspk_crc_check=dec_png_crc",
+  "aspk_decomp_block=dec_bmp_probe",
+  "huff_canon_build=dec_quant_check",
+  "aspk_import_fix=dec_jpeg_idct"
+ ],
+ "dllname": "lzx.dll",
+ "jd": "aW1wb3J0X3RodW5rX3JlYnVpbGQ6ICVkIGVudHJpZXMsIGlhdF9tYXNrPTM2MDkyZDU3AABwZV9zZWN0aW9uc19jb21wYWN0KCkgLT4gYzA4ZWViODUgYnl0ZXMgc2F2ZWQAAEM6XFByb2dyYW0gRmlsZXNcQVNQYWNrXHByb2plY3RzXG9yYml0XHJlbGVhc2UucGRiAABBU1BhY2soYikgNS4yMS4yMyByZWdpc3RlcmVkIHRvIHpldGEgc29mdHdhcmUgbHRkLgAAL0dTIC9ndWFyZDpjZiAvWmkgL08yIC9PaSAvTVQgcHJlY29tcGlsZWQgaGVhZGVyIG9rAABPAHIAaQBnAGkAbgBhAGwARgBpAGwAZQBuAGEAbQBlAAAAAGDoAAAAAF1Bc1BhY2shIHNlYWwgc2VjdGlvbiBtYXJrZXIAAChjKSAyMDA0IGFjbWUgU29mdHdhcmUuIEFsbCByaWdodHMgcmVzZXJ2ZWQuAABhUGENCkFTUGFjayA0LjE5LjM2IC0gdHJpYWwgdmVyc2lvbiBidWlsZCAyMDE1DQoATFpYIHdpbmRvdyAzMktCIGh1ZmZtYW4gY2Fub24gdGFibGUgcHJvYmUAAAAAAAAAAAAAAAAAAAAA"
+}

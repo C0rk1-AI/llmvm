@@ -1,0 +1,10 @@
+﻿replaying work_demo seed 534145564
+build-time ctx: K1=2940a940 K2=c1c549f5 K3=2bae350f MK=8f9f4866
+per-build scheme: kset=2 kmix=(14,9e3779b1,16,85ebca77,15) rot=11 cmb=2 sh=0 l=(+,+,+) pc1=9e3779b1 dmx=(1f09d7e2,85ebca77,123,7)
+ADJ1=41e85989 ADJ2=678cd73c ADJ3=bc55c83b ADJM=cc888221 (mkb=4317ca47)
+
+TRUE  no-debugger: G_k1=2940a940 G_k2=c1c549f5 G_k3=2bae350f G_mk(mask)=8f9f4866
+
+TRUE  debugger   : G_k1=28ee31b8 G_k2=c1c05d58 mask=52ab4f88
+
+regenerated protected.c identical to work_demo/protected.c: True

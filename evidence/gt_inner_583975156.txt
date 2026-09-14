@@ -1,0 +1,3 @@
+seed 583975156 inner: I1=c8a5d8b7 I2=17157279 I3=ce48efcf IMK=f26b7833
+inner scheme: kset=0 kmix=(12,27220a95,15,2545f491,13) rot=11 cmb=0 sh=16 l=(^,^,^) pc1=9e3779b1
+innerized aliases: {'PUSHI': [130, 67, 42], 'PUSHD': [38, 82], 'LDFL': [234, 202, 103], 'STFL': [229, 99, 118], 'JMP': [15, 91], 'JT': [214, 201], 'JF': [33], 'KSET': [68, 166]}
