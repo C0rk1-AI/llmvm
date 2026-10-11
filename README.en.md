@@ -4,15 +4,29 @@
 
 ## Overview
 
-Traditional packers and VM protectors assume a human adversary. LLMVM shifts the threat model toward **LLM-based automated static reverse engineering** — AI agents that analyze binaries through front ends such as IDA and Ghidra.
+Traditional packers and VM protectors are designed against a human analyst.
+LLMVM targets a different adversary: LLM agents that do static reverse
+engineering through front ends such as IDA and Ghidra. These agents read
+decompiled pseudocode quickly, anchor on strings and constants to find key
+code, and walk cross-references to map the call graph. They also work within
+a limited context window and can be led astray by conclusions that merely
+look plausible.
 
-LLMVM does not claim information-theoretic unrecoverability. Instead, it exploits how LLM static analysis actually works to erect systematic disruption and cost barriers:
+LLMVM exploits these traits in three ways:
 
-- **Conclusion steering**: each build injects ~130 thematically coherent decoy strings and a complete set of fake metadata, leading the analysis toward an incorrect program identity and functional narrative;
-- **Information hiding**: the real code exists only as per-build randomized encrypted bytecode whose keys are assembled at runtime from decoy functions, invisible to static analysis;
-- **Cost barriers**: polymorphic handlers, aliased opcodes, dead code, and decoy functions jointly inflate the context and computation an analysis must spend.
+- The real code exists only as encrypted bytecode. Its keys are assembled at
+  runtime from the return values of decoy functions, so no static method can
+  read the code.
+- Every build injects roughly 130 thematically consistent decoy strings and a
+  full set of fake metadata (section names, export names, PDB path), leading
+  the analysis toward a wrong program identity.
+- More than 200 polymorphic handlers, aliased opcodes, dead code, and decoy
+  functions inflate the context and computation an analysis has to spend.
 
-The full design — a mapping of 11 LLM failure modes to countermeasures — is documented in [DESIGN.md](DESIGN.md).
+LLMVM does not claim the protected code is unrecoverable. What it raises is
+the cost and the error rate of an attack. The full design, including a
+mapping of 11 LLM failure modes to countermeasures, is in
+[DESIGN.md](DESIGN.md).
 
 ## How It Works
 
@@ -28,19 +42,25 @@ protected.c (VM interpreter + wrappers + decoy functions)
 same logic in plain C ──MSVC cl──▶ plain.exe (control group)
 ```
 
-LLMVM compiles the target functions into encrypted bytecode for a custom stack-based virtual machine: on disk the bytecode is pure ciphertext, and the keys are assembled only at runtime from the return values of decoy functions. The interpreter consists of 200+ polymorphic handlers whose machine-code form differs on every build, and every function table is XOR-masked.
+Target functions are compiled into encrypted bytecode for a custom
+stack-based virtual machine. The file contains only ciphertext; the keys are
+assembled at runtime from the return values of decoy functions. The
+interpreter is built from 200+ handlers whose machine code differs on every
+build, and every function table is XOR-masked.
 
-Correctness criterion: the build also produces an unprotected native version (`plain.exe`) as a control group, and the two programs' stdout must match byte for byte. `run_demo.py` and `run_selftest.py` perform this comparison automatically; any mismatch fails the build.
+Each build also produces an unprotected native binary (`plain.exe`) as a
+control. The two programs must produce byte-identical stdout, or the build
+fails. `run_demo.py` and `run_selftest.py` run this comparison automatically.
 
 ## Requirements
 
-- Windows x64 + MSVC (VS2017 / 2019 / 2022, or the standalone Build Tools, with
-  the C++ desktop workload). The toolchain is auto-located in this order:
-  `LLMVM_VCVARS` env var -> `cl` already on PATH (a VS developer prompt) ->
-  vswhere -> common install paths; if nothing is found, the build fails with a
-  message pointing at `LLMVM_VCVARS`.
-- Python 3.10+ (pure standard library, no third-party dependencies).
-- (Optional) IDA Pro 9.1 + idalib, for reproducing the validation reports:
+- Windows x64 + MSVC (VS2017 / 2019 / 2022, or the standalone Build Tools
+  with the C++ desktop workload). The toolchain is located automatically:
+  `LLVMVM_VCVARS` env var, then `cl` already on PATH (a VS developer
+  prompt), then vswhere, then common install paths. If none is found, the
+  build stops with a message pointing at `LLVMVM_VCVARS`.
+- Python 3.10+, standard library only.
+- Optional: IDA Pro 9.1 + idalib, for reproducing the validation reports:
 
   ```bash
   pip install "C:\Program Files\IDA Professional 9.1\idalib\python"
@@ -50,140 +70,152 @@ Correctness criterion: the build also produces an unprotected native version (`p
 ## Quick Start
 
 ```bash
-# 1. Demo: build the native control group and the VM-protected version
-#    (with pepolish and fake exports), run both, and diff automatically
+# Demo: build the native control and the VM-protected binary (with pepolish
+# and fake exports), run both, and diff the output
 python run_demo.py
 
-# 2. Semantic-equivalence regression: batch-build VM / native pairs across
-#    random seeds; outputs must match byte for byte
+# Semantic-equivalence regression: batch-build VM / native pairs across
+# random seeds; outputs must match byte for byte
 python run_selftest.py
 
-# 3. Handler template identity tests (30 polymorphic templates x large
-#    random input sweeps; 0 mismatches = pass)
+# Handler template identity tests (35 polymorphic templates over large
+# random input sweeps; 0 mismatches passes)
 python tools_tpl_test.py
 
-# 4. Generate an IDA analysis report for any exe (reproduces the
-#    validation experiments in REPORT.md)
+# Generate an IDA analysis report for any exe (reproduces the validation
+# experiments in REPORT.md)
 python tools_ida.py evidence/sample_alpha.exe my_report.txt 14
 
-# 5. Fold the ground-truth keys and verify build determinism
-#    (seed in evidence/seed.txt)
+# Fold the ground-truth keys and check build determinism
+# (seed in evidence/seed.txt)
 python evidence/fold_true_key.py
 
-# 6. v3 inner-program differential audit: every inner program from a real
-#    build vs. native semantics (0 mismatches = pass)
+# v3 inner-program differential audit: every inner program vs native
+# semantics, 0 mismatches passes
 python evidence/inner_audit.py <seed>
 ```
 
 ## Protecting Your Own Code
 
-1. Write the functions to protect in a subset-C source file. Supported: int8..int64 /
-   uint8..uint64, `float`/`double`, pointers, 1-D and multi-dimensional arrays (global
-   and function-local), structs (nesting, array members, `.`/`->` member access),
-   if/else, for/while, break/continue, arithmetic / bitwise / comparison operators
-   (including implicit int↔float conversions), function calls, recursion (direct, and
-   mutual via forward declarations), and variadic virtual functions. Library functions
-   cannot be called directly; host functions (e.g. puts/printf) must be registered
-   explicitly in `host_config.py`; float-typed host parameters/return values declare
-   their ABI via the `'sig'` field (e.g. `'sqrt': {'arity': 1, 'sig': 'd', 'ret': 'd'}`).
-   Working examples: `demo/vm_targets.c`, `tests/selftest_targets.c`.
+1. Write the functions to protect in one subset-C source file. The language
+   supports:
 
-   Source conventions for the extended features:
-   - **structs**: layout follows MSVC default alignment; local structs, nested
-     structs, and arrays of structs are all supported; across function boundaries
-     structs are pointer-only (by-value parameters/returns and whole-struct
-     assignment are not supported).
-   - **Local arrays and local structs** live in per-invocation frame storage
-     (512 bytes per function) — recursion and reentrancy are safe.
-   - **Variadics**: declare as `uint64_t vsum(uint64_t nv, ...)` — at most 3 fixed
-     parameters, the last must be named `nv` and carries the vararg count (≤32 per
-     call); the function body starts with `vv_start();` and `vv_next()` returns the
-     next raw u64 slot in order (f32 varargs are already promoted to double bit
-     patterns at the call site; narrow integers are 64-bit sign-extended values).
-     Use 64-bit literals/types for call-site varargs (e.g. `10ull`): the native
-     reference side reads them via `va_arg(ap, uint64_t)`, and 32-bit literals leave
-     the upper bytes undefined under the MSVC variadic ABI.
-2. Put the `main` entry point in a separate file (`--main`). The generator rewrites
-   its calls to the protected functions into VM wrappers.
+   - types: int8..int64 / uint8..uint64, `float` / `double`, pointers;
+   - data: 1-D and multi-dimensional arrays (global and local), structs
+     (nesting, array members, `.` / `->` member access);
+   - control flow: if / else, for / while, break / continue;
+   - operators: arithmetic / bitwise / comparison, with the usual implicit
+     conversions between int and float;
+   - functions: mutual calls, recursion (direct, or mutual via forward
+     declarations), variadics.
+
+   Library functions cannot be called directly. Register host functions such
+   as puts and printf in `host_config.py` first; float-typed parameters and
+   return values are declared with the `'sig'` field, e.g.
+   `'sqrt': {'arity': 1, 'sig': 'd', 'ret': 'd'}`.
+
+   A few conventions:
+
+   - Structs follow MSVC default alignment. Across function boundaries they
+     are pointer-only: by-value parameters and returns and whole-struct
+     assignment are not supported.
+   - Local arrays and local structs live in per-invocation frame storage,
+     capped at 512 bytes per function; recursion is safe.
+   - Declare variadic functions as `uint64_t vsum(uint64_t nv, ...)`: at
+     most 3 fixed parameters, the last one must be named `nv` and holds the
+     vararg count (up to 32 per call). The function body begins with
+     `vv_start();`; each `vv_next()` returns the next vararg as a raw u64
+     slot: float varargs are already promoted to double bit patterns at the
+     call site, and narrow integers are sign-extended. Pass 64-bit literals
+     at call sites (e.g. `10ull`). The native control reads varargs with
+     `va_arg(ap, uint64_t)`, and the upper bytes of 32-bit literals are
+     undefined under the MSVC variadic ABI.
+
+   See `demo/vm_targets.c` and `tests/selftest_targets.c` for working
+   examples.
+
+2. Keep `main` in its own file (`--main`). The generator rewrites its calls
+   to the protected functions as VM wrappers.
 3. Generate, compile, and disguise:
 
 ```bash
 python vmc.py build --targets my/targets.c --host my/host_config.py \
                     --main my/main.c --outdir out --seed 12345
-cl ... out\protected.c            # vmlib/build.py's build_exe() wraps this step
+cl ... out\protected.c            # wrapped by vmlib/build.py's build_exe()
 python pepolish.py final.exe      # renames sections to UPX*, appends a decoy-laden .jd section
 ```
 
-Changing the `--seed` regenerates everything: opcode numbers and aliases, handler
-machine-code shapes, keys and decoy constants, encryption formula families, KSET
-re-keying schemes, and decoy narrative themes and string combinations — no two
-builds of the same source share any reusable static signature.
+Changing `--seed` regenerates the opcode numbers and aliases, the handler
+machine-code shapes, the keys and decoy constants, the encryption formulas,
+the KSET re-keying scheme, and the decoy themes and string combinations. Two
+builds of the same source share no reusable static signature.
 
 ## Protection Mechanisms
 
-Full details in [DESIGN.md](DESIGN.md) §1–2. "Per build" below means: changing the
-`--seed` regenerates the entire right-hand column.
+The table groups the mechanisms by the analysis behavior they target; see
+[DESIGN.md](DESIGN.md) §1–2 for details. "Per build" below means changing
+the `--seed` regenerates the right-hand column.
 
-| LLM analysis behavior it defeats | Countermeasure |
+| Analysis behavior | Countermeasure |
 |---|---|
-| Anchoring on strings to locate key code (the most heavily used analysis path) | Real strings and constants exist only as ciphertext inside the bytecode stream — statically invisible |
-| Inferring program identity from section / export names and PDB paths | Each build draws a disguised identity from 18 themes (UPX, VMProtect, NSIS, sqlite, libpng, games, drivers, …; two-theme mixes supported): section names, export names, PDB path, and ~130 thematically coherent decoy strings |
-| Constant fingerprinting (MD5 init values, CRC32 polynomials, …) | Decoys deliberately plant standard fingerprint constants, steering inductive analysis toward the fake narrative |
-| Semantic reasoning over decompiled pseudocode | The same semantic op gets a different machine-code template on every build; 200+ anonymous handlers render the pseudocode unreadable |
-| Traversing the call graph via call / xref | Dispatch, host, and VM function tables are all XOR-masked; static call targets do not resolve |
-| Context budget constraints | Handler count, aliased opcodes, dead code, and decoy functions (at least as numerous as real ones) jointly inflate analysis cost |
-| Self-written decryption / evaluation scripts | Encryption formula families are randomized per build; per-function KSET layered re-keying forces any script to first parse the variable-length instruction stream and evaluate the prologue arithmetic before passing the first layer; never-executed junk blocks further poison pattern matching |
-| Semantic lifting + hand-built emulators (the strongest attack, demonstrated in the v2 blind test) | v3 VM-in-VM: load-bearing handlers are themselves another layer of encrypted bytecode programs — no verifiable intermediate artifact exists between the two lifts |
-| Debugger attachment | IsDebuggerPresent is XORed into the key material: attaching a debugger changes the keys, the bytecode decodes to garbage, and the program silently executes wrong logic |
+| Anchoring on strings to locate key code (the most common path) | Real strings and constants exist only as ciphertext in the bytecode stream |
+| Inferring program identity from section / export names and PDB paths | Each build draws a fake identity from 18 themes (UPX, VMProtect, NSIS, sqlite, libpng, games, drivers, ...; two-theme mixes allowed), with ~130 matching decoy strings |
+| Fingerprinting algorithms by constants (MD5 init values, CRC32 polynomials) | Decoys deliberately plant standard fingerprint constants, steering the analysis toward the fake narrative |
+| Reasoning over decompiled pseudocode | Every semantic op gets a fresh machine-code template per build; 200+ anonymous handlers keep the pseudocode unreadable |
+| Walking the call graph via call / xref | Dispatch, host, and VM function tables are all XOR-masked, so static call targets do not resolve |
+| Limited context window | Handler count, aliased opcodes, dead code, and decoy functions (never fewer than the real ones) inflate the analysis |
+| Self-written decryption / evaluation scripts | Encryption formulas are randomized per build; KSET layered re-keying at every function entry forces a script to parse the variable-length instruction stream and evaluate the prologue arithmetic before it gets past the first layer; never-executed junk blocks poison pattern matching |
+| Semantic lifting plus a hand-built emulator (the strongest attack from the v2 blind test) | v3 VM-in-VM: the load-bearing handlers are themselves another layer of encrypted bytecode, leaving no verifiable intermediate artifact between the two lifts |
+| Debugger attachment | IsDebuggerPresent is XORed into the key material: attaching a debugger changes the keys, the bytecode decodes to garbage, and the program silently runs wrong logic |
 
 ## Validation
 
-Effectiveness is assessed through a four-part protocol (full records in [REPORT.md](REPORT.md)):
+Validation has four parts, documented in full in [REPORT.md](REPORT.md):
 
-1. **Behavioral-equivalence regression**: VM and native versions are batch-built
-   across random seeds; outputs must match byte for byte (`run_selftest.py`).
-2. **Author-side recovery experiments**: genuine recovery attempts against the
-   protected executables using idalib (IDA 9.1's headless analysis library), to
-   gauge how much information the artifacts actually leak.
-3. **Blind tests with uninformed agents**: sub-agents of the same model, given no
-   knowledge of this project, analyze the protected and control samples and are
-   scored on five criteria (entry-point identification, string recovery,
-   algorithm recovery, decoy misjudgement, overall verdict). The control group was
-   fully recovered — validating the method — while every protected group was
-   misled by the decoys.
-4. The v2 / v3 blind-test rounds **explicitly permit and encourage** pure-static
-   attacks using self-written decryption and emulation scripts, directly testing
-   the anti-script mechanisms.
-5. **Analysis environment**: the author-side experiments and blind tests above
-   were run with Claude Code (the CLI agent harness) driving the GLM-5.3 model
-   through idalib MCP tools against IDA — i.e. the validation directly uses the
-   attack shape LLMVM defends against (LLM agent + decompiler front end).
+1. Behavioral-equivalence regression: VM and native builds are batch-built
+   across random seeds and their outputs must match byte for byte
+   (`run_selftest.py`).
+2. Author-side recovery attempts: real recovery work against the protected
+   binaries with idalib (IDA 9.1's headless analysis library), to measure
+   what the artifacts actually leak.
+3. Blind tests with uninformed agents: sub-agents of the same model, unaware
+   of this project's design, analyze the protected and control samples and
+   are scored on five criteria (entry-point identification, string recovery,
+   algorithm recovery, decoy misjudgement, overall verdict). The control
+   group was fully recovered, which validates the method; every protected
+   group was misled by the decoys.
+4. Anti-script attacks: the v2 / v3 blind-test rounds explicitly allow and
+   encourage pure-static attacks with self-written decryption and emulation
+   scripts, testing the anti-script mechanisms directly.
 
-Blind-test samples, ground-truth keys, and review scripts for every round are
-archived in [evidence/](evidence/). v3 (VM-in-VM, denormalization, formula
-variants, metadata scrubbing) targets the strongest attack path identified in the
+The experiments and blind tests ran on the same attack shape LLMVM defends
+against: Claude Code driving the GLM-5.3 model, with IDA accessed through
+idalib MCP tools.
+
+Samples, ground-truth keys, and review scripts for every round are archived
+under [evidence/](evidence/). v3 (VM-in-VM, denormalization, formula
+variants, metadata scrubbing) targets the strongest attack path found in the
 v2 blind test; see [DESIGN.md](DESIGN.md) §2b for the mechanisms and
 [REPORT.md](REPORT.md) §6 for the retest.
 
 ## Known Limitations
 
-- The threat model is restricted to **static LLM analysis**. Dynamic debugging
-  (patching keys after attachment), Unicorn emulation, symbolic execution, and
-  human experts performing full handler classification via IDAPython can still
-  recover the semantics — LLMVM raises attack cost and error rate, not
-  information-theoretic unrecoverability.
-- Language restrictions: subset-C does not support passing/returning structs by
-  value or whole-struct assignment (pointer-only across function boundaries),
-  `switch`, or function pointers; protected functions interact with the outside
+- The threat model covers static LLM analysis only. Dynamic debugging
+  (patching keys after attachment), Unicorn emulation, symbolic execution,
+  and a human expert classifying every handler via IDAPython still work;
+  LLMVM raises cost and error rate, not unbreakability.
+- Language: structs cross function boundaries by pointer only (no by-value
+  parameters or returns, no whole-struct assignment), and there is no
+  switch or function-pointer support; protected code reaches the outside
   world only through registered host functions.
-- The build depends on MSVC `cl`: code generation emits C source; direct PE
-  ingestion is not yet supported.
-- Third-party antivirus software may flag freshly built obfuscated executables;
-  retrying with a different seed resolves this (run_demo / run_selftest include
-  built-in retries and randomized directories).
+- The build needs MSVC `cl` and emits C source; direct PE input is not
+  supported yet.
+- Some antivirus products flag freshly built obfuscated executables; retry
+  with a different seed (run_demo / run_selftest include retries and
+  randomized build directories).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The executables under `evidence/` are experiment
-samples (they contain decoy strings and disguised section names); they are
-provided for reproducing the static analysis only — do not execute them.
+MIT, see [LICENSE](LICENSE). The executables under `evidence/` are
+experiment samples with decoy strings and disguised section names; they are
+for reproducing the static analysis only. Do not run them.
