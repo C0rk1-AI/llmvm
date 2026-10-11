@@ -4,7 +4,7 @@
 
 ## Overview
 
-Traditional packers and VM protectors assume a human adversary. LLMVM shifts the threat model toward **LLM-based automated static reverse engineering** — AI agents that analyze binaries through an IDA / Hex-Rays front end.
+Traditional packers and VM protectors assume a human adversary. LLMVM shifts the threat model toward **LLM-based automated static reverse engineering** — AI agents that analyze binaries through front ends such as IDA and Ghidra.
 
 LLMVM does not claim information-theoretic unrecoverability. Instead, it exploits how LLM static analysis actually works to erect systematic disruption and cost barriers:
 
