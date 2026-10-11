@@ -3,6 +3,8 @@
 Grammar (per function file):
   file      := { funcdef }
   funcdef   := typespec declarator '(' params ')' block
+             | typespec declarator '(' params ')' ';'   (forward decl:
+               registers the signature; the definition follows later)
   typespec  := { typename }  ('*' after declarator id allowed)
   block     := '{' { stmt } '}'
   stmt      := decl | if | while | for | return | break | continue | block |
@@ -208,7 +210,8 @@ class Parser:
             if self.accept(';'):
                 continue
             f = self.parse_func()
-            funcs.append(f)
+            if f is not None:      # forward declarations yield None
+                funcs.append(f)
         return funcs
 
     def parse_func(self):
@@ -235,6 +238,8 @@ class Parser:
                     continue
                 self.expect(')')
                 break
+        if self.accept(';'):
+            return None            # forward declaration; the def follows later
         body = self.parse_block()
         return Func(name, ret, params, body, line)
 

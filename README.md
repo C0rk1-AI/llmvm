@@ -34,8 +34,10 @@ LLMVM 将目标函数编译为自定义栈式虚拟机的加密字节码：字�
 
 ## 环境要求
 
-- Windows x64 + VS2017（MSVC 14.16）。默认路径为 `D:\VS17`，如安装在其他位置，
-  请设置环境变量 `LLMVM_VCVARS` 指向你的 `vcvars64.bat`。
+- Windows x64 + MSVC（VS2017 / 2019 / 2022 或独立的 Build Tools，需 C++ 桌面
+  开发工作负载）。工具链自动定位，顺序为：环境变量 `LLMVM_VCVARS` → PATH 中
+  已可用的 `cl`（VS 开发者命令行）→ vswhere → 常见安装路径；全部未命中时报错
+  并提示设置 `LLMVM_VCVARS`。
 - Python 3.10+（纯标准库，无第三方依赖）。
 - （可选）IDA Pro 9.1 + idalib，用于复现验证报告：
 
@@ -69,9 +71,10 @@ python evidence/inner_audit.py <seed>
 ## 保护自己的代码
 
 1. 将待保护函数编写为 subset-C 源文件。支持：int8..int64 / uint8..uint64、指针、
-   一维数组、if/else、for/while、break/continue、算术/位/比较运算、函数互调。
-   不支持：struct、浮点、多维数组、递归、变参。库函数不可直接调用，host 函数
-   （如 puts/printf）须在 `host_config.py` 中显式注册。
+   一维数组、if/else、for/while、break/continue、算术/位/比较运算、函数互调，
+   以及递归（直接递归与经前置声明的相互递归）。不支持：struct、浮点、多维数组、
+   变参。库函数不可直接调用，host 函数（如 puts/printf）须在 `host_config.py`
+   中显式注册。
    参考示例：`demo/vm_targets.c`、`tests/selftest_targets.c`。
 2. 入口 `main` 独立成文件（`--main`）。生成器会将其对保护函数的调用替换为
    VM wrapper。
@@ -128,8 +131,8 @@ python pepolish.py final.exe      # 节名伪装为 UPX*，追加含诱饵内容
 - 威胁模型限定为**静态 LLM 分析**。动态调试（附加后修补密钥）、Unicorn 模拟、
   符号执行、人工专家借助 IDAPython 完成全量 handler 分类仍可恢复语义——LLMVM
   抬高的是攻击成本与出错率，不构成信息论意义上的不可恢复。
-- 语言限制：subset-C 不支持浮点、struct、多维数组与递归；被保护函数仅能通过
-  注册的 host 函数与外界交互。
+- 语言限制：subset-C 不支持浮点、struct、多维数组；被保护函数仅能通过注册的
+  host 函数与外界交互。
 - 构建依赖 MSVC `cl`：代码生成端为 C 源码级方案，暂不支持直接处理 PE。
 - 部分第三方杀软可能拦截新生成的混淆 exe：更换 seed 重试即可（run_demo /
   run_selftest 已内置重试与随机目录机制）。

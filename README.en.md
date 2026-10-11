@@ -34,9 +34,11 @@ Correctness criterion: the build also produces an unprotected native version (`p
 
 ## Requirements
 
-- Windows x64 + VS2017 (MSVC 14.16). The default path is `D:\VS17`; if yours is
-  installed elsewhere, set the environment variable `LLMVM_VCVARS` to point at
-  your `vcvars64.bat`.
+- Windows x64 + MSVC (VS2017 / 2019 / 2022, or the standalone Build Tools, with
+  the C++ desktop workload). The toolchain is auto-located in this order:
+  `LLMVM_VCVARS` env var -> `cl` already on PATH (a VS developer prompt) ->
+  vswhere -> common install paths; if nothing is found, the build fails with a
+  message pointing at `LLMVM_VCVARS`.
 - Python 3.10+ (pure standard library, no third-party dependencies).
 - (Optional) IDA Pro 9.1 + idalib, for reproducing the validation reports:
 
@@ -77,10 +79,11 @@ python evidence/inner_audit.py <seed>
 
 1. Write the functions to protect in a subset-C source file. Supported: int8..int64 /
    uint8..uint64, pointers, 1-D arrays, if/else, for/while, break/continue,
-   arithmetic / bitwise / comparison operators, and function calls. Not supported:
-   structs, floats, multi-dimensional arrays, recursion, varargs. Library functions
-   cannot be called directly; host functions (e.g. puts/printf) must be registered
-   explicitly in `host_config.py`. Working examples: `demo/vm_targets.c`,
+   arithmetic / bitwise / comparison operators, function calls, and recursion
+   (direct, and mutual via forward declarations). Not supported: structs, floats,
+   multi-dimensional arrays, varargs. Library functions cannot be called directly;
+   host functions (e.g. puts/printf) must be registered explicitly in
+   `host_config.py`. Working examples: `demo/vm_targets.c`,
    `tests/selftest_targets.c`.
 2. Put the `main` entry point in a separate file (`--main`). The generator rewrites
    its calls to the protected functions into VM wrappers.
@@ -147,9 +150,9 @@ v2 blind test; see [DESIGN.md](DESIGN.md) §2b for the mechanisms and
   human experts performing full handler classification via IDAPython can still
   recover the semantics — LLMVM raises attack cost and error rate, not
   information-theoretic unrecoverability.
-- Language restrictions: subset-C does not support floats, structs,
-  multi-dimensional arrays, or recursion; protected functions interact with the
-  outside world only through registered host functions.
+- Language restrictions: subset-C does not support floats, structs, or
+  multi-dimensional arrays; protected functions interact with the outside world
+  only through registered host functions.
 - The build depends on MSVC `cl`: code generation emits C source; direct PE
   ingestion is not yet supported.
 - Third-party antivirus software may flag freshly built obfuscated executables;

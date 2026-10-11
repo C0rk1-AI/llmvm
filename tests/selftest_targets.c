@@ -127,3 +127,33 @@ int32_t t_narrow(int32_t a, int16_t b, uint32_t c) {
   h = (int32_t)(h % 1000003);
   return h;
 }
+
+/* recursion: direct self-calls (deep CALLV nesting + per-entry KSET re-key) */
+uint32_t t_recfact(uint32_t n) {
+  if (n <= 1u) { return 1u; }
+  return n * t_recfact(n - 1u);
+}
+
+uint32_t t_recfib(uint32_t n) {
+  if (n < 2u) { return n; }
+  return t_recfib(n - 1u) + t_recfib(n - 2u);
+}
+
+uint64_t t_recsum(uint64_t n) {
+  if (n < 10u) { return n; }
+  return (n % 10u) + t_recsum(n / 10u);
+}
+
+/* mutual recursion via forward declarations */
+uint32_t t_muteven(uint32_t n);
+uint32_t t_mutodd(uint32_t n);
+
+uint32_t t_muteven(uint32_t n) {
+  if (n == 0u) { return 1u; }
+  return t_mutodd(n - 1u);
+}
+
+uint32_t t_mutodd(uint32_t n) {
+  if (n == 0u) { return 0u; }
+  return t_muteven(n - 1u);
+}

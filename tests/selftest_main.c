@@ -14,6 +14,11 @@ uint64_t t_mem_rw(uint64_t* slots, uint64_t n);
 uint32_t t_hostmix(const char* tag, uint32_t v);
 uint64_t t_cmp(uint64_t a, uint64_t b);
 int32_t t_narrow(int32_t a, int16_t b, uint32_t c);
+uint32_t t_recfact(uint32_t n);
+uint32_t t_recfib(uint32_t n);
+uint64_t t_recsum(uint64_t n);
+uint32_t t_muteven(uint32_t n);
+uint32_t t_mutodd(uint32_t n);
 
 int main(void) {
   uint64_t i;
@@ -44,5 +49,9 @@ int main(void) {
   printf("%d %d %d\n", t_narrow(-1234567, -321, 4000000000u),
          t_narrow(987654, 12345, 7),
          t_narrow(-2147483647 - 1, -1, 4294967295u));
+  printf("%u %u %llu\n", t_recfact(12u), t_recfib(22u),
+         (unsigned long long)t_recsum(9876543210123ull));
+  printf("%u %u %u %u\n", t_muteven(10u), t_mutodd(10u),
+         t_muteven(7u), t_mutodd(7u));
   return 0;
 }
