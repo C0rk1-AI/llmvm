@@ -48,10 +48,17 @@ def main():
     rng = random.Random(args.seed)
 
     src = open(args.targets, encoding='utf-8').read()
-    funcs = lang.parse(src)
+    funcs, structs = lang.parse_full(src)
+    feats = lang.scan_features(funcs, structs)
     hosts, data, data_types = load_host_config(args.host)
+    # typed double hosts (e.g. sqrt) need math.h on both sides; the targets
+    # source itself has no #include directives (implicit int decls suffice
+    # for the int-returning legacy hosts, not for double-returning ones)
+    has_dhost = any(h.get('ret') == 'd' or 'd' in (h.get('sig') or '')
+                    for h in hosts.values())
 
-    ctx = codegen.Ctx(rng, funcs, hosts, data, data_types)
+    ctx = codegen.Ctx(rng, funcs, hosts, data, data_types,
+                      features=feats, structs=structs)
 
     funcs_ir = []
     for fn in funcs:
@@ -87,6 +94,15 @@ def main():
     lines = ['/* plain data for native control build */',
              '#include <stdint.h>', '']
     decl = ['#pragma once', '#include <stdint.h>', '']
+    if has_dhost:
+        decl += ['', '#include <math.h>']
+    if 'varargs' in feats:
+        # native equivalents of the VM variadic builtins (subset-C source
+        # uses vv_start()/vv_next() inside `...` functions; on the VM side
+        # they compile to a marker / the VNEXT op)
+        decl += ['', '#include <stdarg.h>',
+                 '#define vv_start() va_list vv_ap; va_start(vv_ap, nv)',
+                 '#define vv_next()  va_arg(vv_ap, uint64_t)']
     for name, blob in data.items():
         base, ptr = data_types[name]
         ct = gen_c.TY_C[base] + '*' * ptr

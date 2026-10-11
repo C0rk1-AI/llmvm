@@ -31,10 +31,12 @@ def build_ib(seed):
     rng = random.Random(seed)
     src = open(os.path.join(ROOT, 'tests/selftest_targets.c'),
                encoding='utf-8').read()
-    funcs = lang.parse(src)
+    funcs, structs = lang.parse_full(src)
+    feats = lang.scan_features(funcs, structs)
     hosts, data, data_types = load_host_config(
         os.path.join(ROOT, 'tests/host_config.py'))
-    ctx = codegen.Ctx(rng, funcs, hosts, data, data_types)
+    ctx = codegen.Ctx(rng, funcs, hosts, data, data_types,
+                      features=feats, structs=structs)
     funcs_ir = []
     for fn in funcs:
         gen, cipher, deltas = codegen.build_function(fn, ctx)

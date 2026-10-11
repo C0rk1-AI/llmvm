@@ -78,13 +78,31 @@ python evidence/inner_audit.py <seed>
 ## Protecting Your Own Code
 
 1. Write the functions to protect in a subset-C source file. Supported: int8..int64 /
-   uint8..uint64, pointers, 1-D arrays, if/else, for/while, break/continue,
-   arithmetic / bitwise / comparison operators, function calls, and recursion
-   (direct, and mutual via forward declarations). Not supported: structs, floats,
-   multi-dimensional arrays, varargs. Library functions cannot be called directly;
-   host functions (e.g. puts/printf) must be registered explicitly in
-   `host_config.py`. Working examples: `demo/vm_targets.c`,
-   `tests/selftest_targets.c`.
+   uint8..uint64, `float`/`double`, pointers, 1-D and multi-dimensional arrays (global
+   and function-local), structs (nesting, array members, `.`/`->` member access),
+   if/else, for/while, break/continue, arithmetic / bitwise / comparison operators
+   (including implicit int↔float conversions), function calls, recursion (direct, and
+   mutual via forward declarations), and variadic virtual functions. Library functions
+   cannot be called directly; host functions (e.g. puts/printf) must be registered
+   explicitly in `host_config.py`; float-typed host parameters/return values declare
+   their ABI via the `'sig'` field (e.g. `'sqrt': {'arity': 1, 'sig': 'd', 'ret': 'd'}`).
+   Working examples: `demo/vm_targets.c`, `tests/selftest_targets.c`.
+
+   Source conventions for the extended features:
+   - **structs**: layout follows MSVC default alignment; local structs, nested
+     structs, and arrays of structs are all supported; across function boundaries
+     structs are pointer-only (by-value parameters/returns and whole-struct
+     assignment are not supported).
+   - **Local arrays and local structs** live in per-invocation frame storage
+     (512 bytes per function) — recursion and reentrancy are safe.
+   - **Variadics**: declare as `uint64_t vsum(uint64_t nv, ...)` — at most 3 fixed
+     parameters, the last must be named `nv` and carries the vararg count (≤32 per
+     call); the function body starts with `vv_start();` and `vv_next()` returns the
+     next raw u64 slot in order (f32 varargs are already promoted to double bit
+     patterns at the call site; narrow integers are 64-bit sign-extended values).
+     Use 64-bit literals/types for call-site varargs (e.g. `10ull`): the native
+     reference side reads them via `va_arg(ap, uint64_t)`, and 32-bit literals leave
+     the upper bytes undefined under the MSVC variadic ABI.
 2. Put the `main` entry point in a separate file (`--main`). The generator rewrites
    its calls to the protected functions into VM wrappers.
 3. Generate, compile, and disguise:
@@ -136,6 +154,10 @@ Effectiveness is assessed through a four-part protocol (full records in [REPORT.
 4. The v2 / v3 blind-test rounds **explicitly permit and encourage** pure-static
    attacks using self-written decryption and emulation scripts, directly testing
    the anti-script mechanisms.
+5. **Analysis environment**: the author-side experiments and blind tests above
+   were run with Claude Code (the CLI agent harness) driving the GLM-5.3 model
+   through idalib MCP tools against IDA — i.e. the validation directly uses the
+   attack shape LLMVM defends against (LLM agent + decompiler front end).
 
 Blind-test samples, ground-truth keys, and review scripts for every round are
 archived in [evidence/](evidence/). v3 (VM-in-VM, denormalization, formula
@@ -150,9 +172,10 @@ v2 blind test; see [DESIGN.md](DESIGN.md) §2b for the mechanisms and
   human experts performing full handler classification via IDAPython can still
   recover the semantics — LLMVM raises attack cost and error rate, not
   information-theoretic unrecoverability.
-- Language restrictions: subset-C does not support floats, structs, or
-  multi-dimensional arrays; protected functions interact with the outside world
-  only through registered host functions.
+- Language restrictions: subset-C does not support passing/returning structs by
+  value or whole-struct assignment (pointer-only across function boundaries),
+  `switch`, or function pointers; protected functions interact with the outside
+  world only through registered host functions.
 - The build depends on MSVC `cl`: code generation emits C source; direct PE
   ingestion is not yet supported.
 - Third-party antivirus software may flag freshly built obfuscated executables;

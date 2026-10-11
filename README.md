@@ -70,12 +70,26 @@ python evidence/inner_audit.py <seed>
 
 ## 保护自己的代码
 
-1. 将待保护函数编写为 subset-C 源文件。支持：int8..int64 / uint8..uint64、指针、
-   一维数组、if/else、for/while、break/continue、算术/位/比较运算、函数互调，
-   以及递归（直接递归与经前置声明的相互递归）。不支持：struct、浮点、多维数组、
-   变参。库函数不可直接调用，host 函数（如 puts/printf）须在 `host_config.py`
-   中显式注册。
+1. 将待保护函数编写为 subset-C 源文件。支持：int8..int64 / uint8..uint64、
+   `float`/`double`、指针、一维/多维数组（全局与函数局部均可）、struct（嵌套、
+   数组成员、`.`/`->` 成员访问）、if/else、for/while、break/continue、算术/位/
+   比较运算（含 int↔float 隐式转换）、函数互调与递归（直接递归与经前置声明的
+   相互递归），以及变参虚拟函数。库函数不可直接调用，host 函数（如 puts/printf）
+   须在 `host_config.py` 中显式注册；浮点 host 形参/返回值可经 `'sig'` 字段声明
+   ABI（如 `'sqrt': {'arity': 1, 'sig': 'd', 'ret': 'd'}`）。
    参考示例：`demo/vm_targets.c`、`tests/selftest_targets.c`。
+
+   扩展特性的源码约定：
+   - **struct**：布局按 MSVC 默认对齐计算；局部 struct、嵌套 struct、struct
+     数组均支持；跨函数边界只按指针传递（按值传参/返回与整体赋值不支持）。
+   - **局部数组与局部 struct** 存放在每次调用的独立帧存储中（上限 512 字节/
+     函数），递归与重入安全。
+   - **变参**：声明形如 `uint64_t vsum(uint64_t nv, ...)`——固定形参至多 3 个，
+     最后一个必须名为 `nv` 且语义为变参个数（单次调用 ≤32 个）；函数体以
+     `vv_start();` 起始，`vv_next()` 按顺序返回一个 u64 原始位槽（f32 变参已在
+     调用点提升为 double 位模式，窄整数为 64 位符号提升值）。调用点变参请使用
+     64 位字面量/类型（如 `10ull`）：原生对照侧以 `va_arg(ap, uint64_t)` 读取，
+     32 位字面量在 MSVC 变参 ABI 下高位未定义。
 2. 入口 `main` 独立成文件（`--main`）。生成器会将其对保护函数的调用替换为
    VM wrapper。
 3. 生成、编译与伪装：
@@ -121,6 +135,9 @@ python pepolish.py final.exe      # 节名伪装为 UPX*，追加含诱饵内容
    综合判定）。对照组被完全恢复（验证盲测方法有效），保护组均被诱饵误导。
 4. v2 / v3 轮盲测**明确允许并鼓励**代理自写解密与模拟脚本开展纯静态攻击，
    直接检验反脚本机制的有效性。
+5. **分析环境**：上述作者侧实验与盲测均以 Claude Code（CLI 代理框架）驱动
+   GLM-5.3 模型、经 idalib MCP 工具接入 IDA 完成静态分析——即直接以本项目
+   所防御的攻击形态（LLM 代理 + 反编译前端）作为验证手段。
 
 各轮盲测样本、地面真值密钥与复核脚本存档于 [evidence/](evidence/)。v3
 （VM-in-VM、反规范化、公式变体、元数据清理）针对 v2 盲测中发现的最强攻击
@@ -131,8 +148,8 @@ python pepolish.py final.exe      # 节名伪装为 UPX*，追加含诱饵内容
 - 威胁模型限定为**静态 LLM 分析**。动态调试（附加后修补密钥）、Unicorn 模拟、
   符号执行、人工专家借助 IDAPython 完成全量 handler 分类仍可恢复语义——LLMVM
   抬高的是攻击成本与出错率，不构成信息论意义上的不可恢复。
-- 语言限制：subset-C 不支持浮点、struct、多维数组；被保护函数仅能通过注册的
-  host 函数与外界交互。
+- 语言限制：subset-C 不支持 struct 按值传参/返回与整体赋值（跨函数边界只按
+  指针）、`switch`、函数指针；被保护函数仅能通过注册的 host 函数与外界交互。
 - 构建依赖 MSVC `cl`：代码生成端为 C 源码级方案，暂不支持直接处理 PE。
 - 部分第三方杀软可能拦截新生成的混淆 exe：更换 seed 重试即可（run_demo /
   run_selftest 已内置重试与随机目录机制）。

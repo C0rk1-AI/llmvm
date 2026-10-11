@@ -21,9 +21,11 @@ def load_host_config(path):
 def listing(seed, targets=None, fname=None):
     rng = random.Random(seed)
     src = open(os.path.join(ROOT, 'tests/selftest_targets.c'), encoding='utf-8').read()
-    funcs = lang.parse(src)
+    funcs, structs = lang.parse_full(src)
+    feats = lang.scan_features(funcs, structs)
     hosts, data, dt = load_host_config(os.path.join(ROOT, 'tests/host_config.py'))
-    ctx = codegen.Ctx(rng, funcs, hosts, data, dt)
+    ctx = codegen.Ctx(rng, funcs, hosts, data, dt,
+                      features=feats, structs=structs)
     out = {}
     for fn in funcs:
         gen, cipher, deltas = codegen.build_function(fn, ctx)
@@ -55,6 +57,10 @@ def listing(seed, targets=None, fname=None):
                     pass
                 lines.append('%4d: %s %d%s' % (at, sem, q, extra))
                 i += 2
+            elif sem == 'LAA':
+                v = int.from_bytes(plain[i+1:i+3], 'little')
+                lines.append('%4d: LAA loc+%d' % (at, v))
+                i += 3
             elif sem in ('JMP', 'JT', 'JF'):
                 rel = int.from_bytes(plain[i+1:i+5], 'little', signed=True)
                 tgt = i + 5 + rel

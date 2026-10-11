@@ -33,7 +33,7 @@ Layout of emitted file:
   [12] #include user main
 """
 from . import enc, inner
-from .codegen import NFR, STK
+from .codegen import NFR, STK, LOCMAX
 
 M32 = 0xFFFFFFFF
 M64 = 0xFFFFFFFFFFFFFFFF
@@ -469,17 +469,116 @@ def gen_binop_handler(rng, used, op, helpers):
     return n, 'static void %s(vmst *s){ (void)s;\n%s\n}' % (n, body)
 
 
-def gen_handler(rng, used, op, sch=None, fx=None, helpers=None):
-    """fx: fetch-name set {b,w32,w32s,w64} chosen per handler (V3-c)."""
+# ---- float / conversion handlers (feature-gated ops; slots carry IEEE754
+# bits, f32 as a zero-extended 32-bit pattern) ----
+
+FLOAT_BIN = {          # op -> (is_f32, C expression over xa.v / xb.v)
+    'FADD': (False, '%s + %s'), 'FSUB': (False, '%s - %s'),
+    'FMUL': (False, '%s * %s'), 'FDIV': (False, '%s / %s'),
+    'FADDS': (True, '%s + %s'), 'FSUBS': (True, '%s - %s'),
+    'FMULS': (True, '%s * %s'), 'FDIVS': (True, '%s / %s'),
+}
+# NB: no algebraic dual forms for float add/sub — (-0.0) + (+0.0) == +0.0
+# but (-0.0) - (-(+0.0)) == -0.0, so "a - (-b)" is NOT a bit-identity.
+# Polymorphism comes from temp names, junk weave, helper split and the
+# canceling tangle instead.
+FLOAT_CMP = {'FEQ': '==', 'FLT': '<', 'FLE': '<='}
+
+
+def gen_float_handler(rng, used, op, helpers):
+    """Float arithmetic / compare / conversion handler. Same V3-b shape
+    family as integer binops (inline / helper split / canceling tangle);
+    every textual variant is bit-exact."""
+    n = hname(rng, used)
+    if op in FLOAT_BIN:
+        is32, fex = FLOAT_BIN[op]
+        ct, ut = ('float', 'uint32_t') if is32 else ('double', 'uint64_t')
+        ld = ' & 0xFFFFFFFFull' if is32 else ''
+        va, vb, vr = rng.sample(('v1', 'v2', 'rr', 'ta', 'tb', 'q1', 'q2'), 3)
+        pops = ('    uint64_t %s = s->st[--s->sp];\n'
+                '    uint64_t %s = s->st[--s->sp];' % (vb, va))
+        if rng.randrange(2):
+            hn = hname(rng, used, 'hf_')
+            helpers.append(
+                'static uint64_t %s(uint64_t a, uint64_t b){ '
+                'union { %s u; %s v; } xa, xb, xr; xa.u = a%s; xb.u = b%s; '
+                'xr.v = %s; return xr.u; }'
+                % (hn, ut, ct, ld, ld, fex % ('xa.v', 'xb.v')))
+            lines = [pops,
+                     '    uint64_t %s = %s(%s, %s);' % (vr, hn, va, vb)]
+        else:
+            lines = [pops,
+                     '    union { %s u; %s v; } xa, xb, xr;' % (ut, ct),
+                     '    xa.u = %s%s; xb.u = %s%s;' % (va, ld, vb, ld),
+                     '    xr.v = %s;' % (fex % ('xa.v', 'xb.v')),
+                     '    uint64_t %s = xr.u;' % vr]
+    elif op in FLOAT_CMP:
+        va, vb, vr = rng.sample(('v1', 'v2', 'rr', 'ta', 'tb', 'q1', 'q2'), 3)
+        pops = ('    uint64_t %s = s->st[--s->sp];\n'
+                '    uint64_t %s = s->st[--s->sp];' % (vb, va))
+        lines = [pops,
+                 '    union { uint64_t u; double v; } xa, xb;',
+                 '    xa.u = %s; xb.u = %s;' % (va, vb),
+                 '    uint64_t %s = (uint64_t)(xa.v %s xb.v);'
+                 % (vr, FLOAT_CMP[op])]
+    else:                            # conversions: single u64 operand
+        va, vr = rng.sample(('v1', 'rr', 'u1', 'w1'), 2)
+        pops = '    uint64_t %s = s->st[--s->sp];' % va
+        B = {
+            'I2FD': ['    union { uint64_t u; double v; } xr;',
+                     '    xr.v = (double)(int64_t)%s;' % va,
+                     '    uint64_t %s = xr.u;' % vr],
+            'U2FD': ['    union { uint64_t u; double v; } xr;',
+                     '    xr.v = (double)%s;' % va,
+                     '    uint64_t %s = xr.u;' % vr],
+            'FD2I': ['    union { uint64_t u; double v; } xa;',
+                     '    xa.u = %s;' % va,
+                     '    uint64_t %s = (uint64_t)(int64_t)xa.v;' % vr],
+            'FD2U': ['    union { uint64_t u; double v; } xa;',
+                     '    xa.u = %s;' % va,
+                     '    uint64_t %s = (uint64_t)xa.v;' % vr],
+            'F2D': ['    union { uint32_t u; float v; } xf;',
+                    '    xf.u = (uint32_t)%s;' % va,
+                    '    union { uint64_t u; double v; } xr;',
+                    '    xr.v = (double)xf.v;',
+                    '    uint64_t %s = xr.u;' % vr],
+            'D2F': ['    union { uint64_t u; double v; } xa;',
+                    '    xa.u = %s;' % va,
+                    '    union { uint32_t u; float v; } xf;',
+                    '    xf.v = (float)xa.v;',
+                    '    uint64_t %s = (uint64_t)xf.u;' % vr],
+        }
+        if op not in B:
+            raise KeyError(op)
+        lines = [pops] + B[op]
+    if rng.random() < 0.35:
+        kk = '0x%016xull' % rng.getrandbits(64)
+        lines += ['    %s ^= %s;' % (vr, kk),
+                  junklines(rng, 1),
+                  '    s->st[s->sp++] = %s ^ %s;' % (vr, kk),
+                  '    %s ^= %s;' % (vr, kk)]
+    else:
+        lines.append('    s->st[s->sp++] = %s;' % vr)
+    body = '\n'.join(_weave(rng, lines))
+    return n, 'static void %s(vmst *s){ (void)s;\n%s\n}' % (n, body)
+
+
+def gen_handler(rng, used, op, sch=None, fx=None, helpers=None, va_on=False):
+    """fx: fetch-name set {b,w32,w32s,w64} chosen per handler (V3-c).
+    va_on: build is variadic-aware (extended CALLV / vm_exec_core)."""
     helpers = helpers if helpers is not None else []
     fx = fx or {'b': 'NXB', 'w32': 'NX32', 'w32s': 'NX32S', 'w64': 'NX64'}
     binops = {'ADD', 'SUB', 'MUL', 'AND', 'OR', 'XOR', 'DIVU', 'MODU',
               'DIVS', 'MODS', 'SHL', 'SHR', 'SAR',
               'LTU', 'LEQU', 'GTU', 'GEQU', 'LTS', 'LEQS', 'GTS', 'GEQS',
               'EQU', 'NEQ'}
+    fops = (set(FLOAT_BIN) | set(FLOAT_CMP) |
+            {'I2FD', 'U2FD', 'FD2I', 'FD2U', 'F2D', 'D2F'})
     unops = {'NEG', 'BNOT', 'NOTL'}
     if op in binops:
         return gen_binop_handler(rng, used, op, helpers)
+    if op in fops:
+        return gen_float_handler(rng, used, op, helpers)
     n = hname(rng, used)
     if op in unops:
         if op == 'NEG':
@@ -551,17 +650,50 @@ def gen_handler(rng, used, op, sch=None, fx=None, helpers=None):
                 '%s\n'
                 '    s->st[s->sp++] = hf(av[0], av[1], av[2]);'
                 % (fx['b'], junklines(rng, 1), TRACE_CALLH))
+    elif op == 'LAA':
+        # frame-local aggregate address: 2 plain LE operand bytes (linearize
+        # writes them unmasked, exactly like PUSHI's imm64)
+        body = ('    unsigned char o1 = %s(s); unsigned char o2 = %s(s);\n'
+                '    unsigned oo = (unsigned)o1 | ((unsigned)o2 << 8);\n'
+                '    s->st[s->sp++] = (uint64_t)(uintptr_t)&s->loc[oo];'
+                % (fx['b'], fx['b']))
+    elif op == 'VNEXT':
+        body = (junklines(rng, 1) + '\n'
+                '    s->st[s->sp++] = s->va[s->vp++];')
     elif op == 'CALLV':
-        body = ('    unsigned char o9 = %s(s); unsigned char q = '
-                '(unsigned char)(o9 ^ dmx(s->lp));\n'
-                '    const unsigned char *bc2 = (const unsigned char *)'
-                '(G_vmt[q].bcp ^ (uint64_t)G_mk);\n'
-                '    unsigned char na = G_vmt[q].na; uint64_t rr[3]; '
-                'rr[0] = rr[1] = rr[2] = 0;\n'
-                '%s\n'
-                '    while (na > 0) { rr[--na] = s->st[--s->sp]; }\n'
-                '    vm_exec_core(bc2, G_vmt[q].n, G_vmt[q].na, rr);\n'
-                '    s->st[s->sp++] = rr[0];' % (fx['b'], junklines(rng, 1)))
+        if va_on:
+            body = ('    unsigned char o9 = %s(s); unsigned char q = '
+                    '(unsigned char)(o9 ^ dmx(s->lp));\n'
+                    '    const unsigned char *bc2 = (const unsigned char *)'
+                    '(G_vmt[q].bcp ^ (uint64_t)G_mk);\n'
+                    '    unsigned char na = G_vmt[q].na; unsigned char naf '
+                    '= na; uint64_t rr[3]; rr[0] = rr[1] = rr[2] = 0;\n'
+                    '%s\n'
+                    '    while (na > 0) { rr[--na] = s->st[--s->sp]; }\n'
+                    '    if (G_vmv[q]) {\n'
+                    '        unsigned nn = (unsigned)rr[naf - 1u]; '
+                    'unsigned skip = nn > 32u ? nn - 32u : 0u; unsigned j;\n'
+                    '        uint64_t vbuf[32];\n'
+                    '        for (j = nn; j > 0u; j--) { uint64_t t = '
+                    's->st[--s->sp]; if (j > skip) vbuf[j - skip - 1u] = t; }\n'
+                    '        vm_exec_core(bc2, G_vmt[q].n, naf, rr, vbuf, '
+                    'nn - skip);\n'
+                    '    } else {\n'
+                    '        vm_exec_core(bc2, G_vmt[q].n, naf, rr, '
+                    '(uint64_t *)0, 0u);\n'
+                    '    }\n'
+                    '    s->st[s->sp++] = rr[0];' % (fx['b'], junklines(rng, 1)))
+        else:
+            body = ('    unsigned char o9 = %s(s); unsigned char q = '
+                    '(unsigned char)(o9 ^ dmx(s->lp));\n'
+                    '    const unsigned char *bc2 = (const unsigned char *)'
+                    '(G_vmt[q].bcp ^ (uint64_t)G_mk);\n'
+                    '    unsigned char na = G_vmt[q].na; uint64_t rr[3]; '
+                    'rr[0] = rr[1] = rr[2] = 0;\n'
+                    '%s\n'
+                    '    while (na > 0) { rr[--na] = s->st[--s->sp]; }\n'
+                    '    vm_exec_core(bc2, G_vmt[q].n, G_vmt[q].na, rr);\n'
+                    '    s->st[s->sp++] = rr[0];' % (fx['b'], junklines(rng, 1)))
     elif op == 'RET':
         body = junklines(rng, 2) + '\n    s->alive = 0;'
     elif op == 'NOP':
@@ -764,15 +896,19 @@ def junklines_im(rng, count=1):
 
 TY_C = {'u8': 'uint8_t', 'i8': 'char', 'u16': 'uint16_t', 'i16': 'int16_t',
         'u32': 'uint32_t', 'i32': 'int32_t', 'u64': 'uint64_t',
-        'i64': 'int64_t', 'void': 'void'}
+        'i64': 'int64_t', 'f32': 'float', 'f64': 'double', 'void': 'void'}
 
 
 def ty_c(ty):
+    if ty.base == 'struct':
+        return 'struct %s%s' % (ty.sname or '', '*' * ty.ptr)
     return TY_C[ty.base] + '*' * ty.ptr
 
 
 def proto(fn):
     ps = ', '.join('%s %s' % (ty_c(t), n) for t, n in fn.params) or 'void'
+    if fn.variadic:
+        ps = (ps + ', ...') if fn.params else '...'
     return '%s %s(%s)' % (ty_c(fn.ret), fn.name, ps)
 
 
@@ -789,6 +925,26 @@ def emit(ctx, funcs_ir, decoys, tables, user_main_include, opaque_calls=True,
     sch = ctx.sch
     L = []
     A = L.append
+    feats = ctx.features
+    loc_on = 'struct' in feats or 'narray' in feats
+    va_on = 'varargs' in feats
+
+    vmst_extra = ''
+    if va_on:
+        vmst_extra += '\n    const uint64_t *va; unsigned char vp;'
+    if loc_on:
+        vmst_extra += '\n    unsigned char loc[LOCMAX];'
+    extra_def = '\n#define LOCMAX %d' % LOCMAX if loc_on else ''
+    stdarg_inc = '#include <stdarg.h>\n' if va_on else ''
+    math_inc = ''
+    for hs in ctx.host_specs:
+        if hs.ret == 'd' or (hs.sigs and
+                             any('d' in (s or '') for s in hs.sigs)):
+            math_inc = '#include <math.h>\n'   # 'd' hosts (e.g. sqrt)
+            break
+    vmv_decl = ('static unsigned char G_vmv[%d];\n' % len(funcs_ir)) if va_on \
+        else ''
+    va_sig = ', uint64_t *va, unsigned nv' if va_on else ''
 
     A('''/* auto-generated - do not edit */
 #include <stdint.h>
@@ -796,13 +952,13 @@ def emit(ctx, funcs_ir, decoys, tables, user_main_include, opaque_calls=True,
 #include <string.h>
 #include <stdlib.h>
 #include <windows.h>
-
+%s
 #define NFR %d
-#define VSTK %d
+#define VSTK %d%s
 
 typedef struct _vmst {
     const unsigned char *bc; uint32_t pc; uint32_t pp; uint32_t lp;
-    uint64_t st[VSTK]; int sp; uint64_t fr[NFR]; int alive;
+    uint64_t st[VSTK]; int sp; uint64_t fr[NFR]; int alive;%s
 } vmst;
 
 typedef void (*vmhf)(vmst *);
@@ -815,15 +971,16 @@ static uintptr_t G_host[%d];
 static unsigned char G_harn[%d];
 struct vme { uintptr_t bcp; uint32_t n; unsigned char na; };
 static struct vme G_vmt[%d];
-static unsigned char *G_db[%d];
+%sstatic unsigned char *G_db[%d];
 
 static uint32_t rotl(uint32_t v, unsigned r){
     r &= 31u; if (!r) return v; return (v << r) | (v >> (32u - r));
 }
 static void vm_exec_core(const unsigned char *bc, uint32_t n,
-                         unsigned char na, uint64_t *rv);
-''' % (NFR, STK, len(ctx.hid_rev), len(ctx.hid_rev),
-       len(funcs_ir), max(1, len(ctx.data_slots))))
+                         unsigned char na, uint64_t *rv%s);
+''' % (stdarg_inc + math_inc, NFR, STK, extra_def, vmst_extra,
+       len(ctx.hid_rev), len(ctx.hid_rev),
+       len(funcs_ir), vmv_decl, max(1, len(ctx.data_slots)), va_sig))
 
     # junk functions
     for j in range(4):
@@ -898,6 +1055,34 @@ static void vm_exec_core(const unsigned char *bc, uint32_t n,
                   % (hs.name, a, hs.name[2:]))
             continue
         for a in hs.arities:
+            if hs.sigs is not None:
+                # typed host ('sig'/'ret' in host_config): 'u'/'i'/'p'/'d'
+                sig = hs.sigs[hs.arities.index(a)]
+                pre, cargs = [], []
+                for i in range(a):
+                    k = sig[i] if sig else 'u'
+                    if k == 'p':
+                        cargs.append('(void *)(uintptr_t)a%d' % i)
+                    elif k == 'd':
+                        pre.append('    union { uint64_t u; double v; } c%d; '
+                                   'c%d.u = a%d;' % (i, i, i))
+                        cargs.append('c%d.v' % i)
+                    elif k == 'i':
+                        cargs.append('(int64_t)a%d' % i)
+                    else:
+                        cargs.append('a%d' % i)
+                unused = ''.join('(void)a%d;' % i for i in range(a, 3))
+                if hs.ret == 'd':
+                    tail = ('    union { uint64_t u; double v; } rz; '
+                            'rz.v = %s(%s); return rz.u;'
+                            % (hs.name, ', '.join(cargs)))
+                else:
+                    tail = '    return (uint64_t)(%s(%s));' % (
+                        hs.name, ', '.join(cargs))
+                A('static uint64_t H_%s_%d(uint64_t a0, uint64_t a1, uint64_t a2){\n'
+                  '    %s\n%s\n%s\n}'
+                  % (hs.name, a, unused, '\n'.join(pre), tail))
+                continue
             call = {
                 'puts': '(uint64_t)puts((const char *)(uintptr_t)a0)',
                 'putchar': '(uint64_t)putchar((int)a0)',
@@ -932,7 +1117,7 @@ static void vm_exec_core(const unsigned char *bc, uint32_t n,
         else:
             fx = vnames[rng.randrange(NV)]
             n, body = gen_handler(rng, used, sem if sem else 'POISON',
-                                  sch=sch, fx=fx, helpers=helpers)
+                                  sch=sch, fx=fx, helpers=helpers, va_on=va_on)
             handlers.append((byte, n, body))
     A('')
     for h in helpers:
@@ -997,6 +1182,8 @@ static void vm_init(void){
         A('    G_vmt[%d].bcp = (uintptr_t)&BC%d[0] ^ (uintptr_t)G_mk; '
           'G_vmt[%d].n = %d; G_vmt[%d].na = %d;'
           % (i, i, i, len(cipher), i, len(fn.params)))
+        if va_on and fn.variadic:
+            A('    G_vmv[%d] = 1;' % i)
     dslot_fn = rng.choice(('km', 'km2'))
     for i, blob in enumerate(ctx.data_slots):
         A('''    { const unsigned char *cc = DS%d; unsigned char *dd = DB%d;
@@ -1011,14 +1198,16 @@ static void vm_init(void){
     # re-entry both stay correct, and the key active at any position remains
     # a static property of that position (loop revisits decrypt identically).
     main_fx = vnames[rng.randrange(NV)]
+    va_init = '\n    s.va = va; s.vp = 0;' if va_on else ''
+    vmx_tail = ', (uint64_t *)0, 0u' if va_on else ''   # non-variadic entry
     A('''
 static void vm_exec_core(const unsigned char *bc, uint32_t n,
-                         unsigned char na, uint64_t *rv){
+                         unsigned char na, uint64_t *rv%s){
     vmst s; unsigned i;
     uint32_t pk1 = G_k1, pk2 = G_k2, pk3 = G_k3;
     G_k1 = G_b1; G_k2 = G_b2; G_k3 = G_b3;
     (void)n;
-    s.bc = bc; s.pc = 0; s.pp = 0; s.lp = 0; s.sp = 0; s.alive = 1;
+    s.bc = bc; s.pc = 0; s.pp = 0; s.lp = 0; s.sp = 0; s.alive = 1;%s
     for (i = 0; i < NFR; i++) s.fr[i] = 0;
     for (i = 0; i < (unsigned)na && i < 3; i++) s.fr[i] = rv[i];
     while (s.alive) {
@@ -1032,11 +1221,19 @@ static void vm_exec_core(const unsigned char *bc, uint32_t n,
 static void vmx_run(unsigned char fid, uint64_t *rv){
     vm_init();
     vm_exec_core((const unsigned char *)(G_vmt[fid].bcp ^ (uint64_t)G_mk),
-                 G_vmt[fid].n, G_vmt[fid].na, rv);
+                 G_vmt[fid].n, G_vmt[fid].na, rv%s);
 }
-''' % (main_fx['b'],
+''' % (va_sig, va_init, main_fx['b'],
        ('        if (getenv("LLMVM_TRACE")) fprintf(stderr, "pc=%3u op=%3d sp=%d\\n", s.pc, (int)op, s.sp);')
-       if trace else ''))
+       if trace else '', vmx_tail))
+    if va_on:
+        A('''static void vmx_run_v(unsigned char fid, uint64_t *rv,
+                         uint64_t *va, unsigned nv){
+    vm_init();
+    vm_exec_core((const unsigned char *)(G_vmt[fid].bcp ^ (uint64_t)G_mk),
+                 G_vmt[fid].n, G_vmt[fid].na, rv, va, nv);
+}
+''')
 
     # wrappers with original signatures (+ opaque decoy calls)
     for i, (fn, _) in enumerate(funcs_ir):
@@ -1044,26 +1241,52 @@ static void vmx_run(unsigned char fid, uint64_t *rv){
     A('')
     for i, (fn, _) in enumerate(funcs_ir):
         params = ', '.join('%s %s' % (ty_c(t), n) for t, n in fn.params) or 'void'
-        args = []
-        for t, n in fn.params:
-            if t.ptr:
-                args.append('(uint64_t)(uintptr_t)%s' % n)
-            elif t.base in ('i32', 'i8', 'i16', 'i64'):
-                args.append('(uint64_t)(int64_t)%s' % n)
-            else:
-                args.append('(uint64_t)%s' % n)
+        if fn.variadic:
+            params = (params + ', ...') if fn.params else '...'
         ret = fn.ret
         A('%s %s(%s){' % (ty_c(ret), fn.name, params))
         A('    uint64_t rv[3]; rv[0]=rv[1]=rv[2]=0;')
-        for k, e in enumerate(args):
-            A('    rv[%d] = %s;' % (k, e))
+        var_nv = fn.params[-1][1] if fn.variadic else None
+        if fn.variadic:
+            # native-entry variadic wrapper: stage the varargs (x64 varargs
+            # ABI passes integer-class args in 8-byte slots, so reading
+            # them uniformly as uint64_t is well-defined)
+            A('    uint64_t vbuf[32];')
+            A('    va_list vv_ap; va_start(vv_ap, %s);' % var_nv)
+            A('    { unsigned vq; for (vq = 0; vq < (unsigned)%s && vq < 32u;'
+              ' vq++) vbuf[vq] = va_arg(vv_ap, uint64_t); }' % var_nv)
+            A('    va_end(vv_ap);')
+        for k, (t, n) in enumerate(fn.params):
+            if t.ptr:
+                A('    rv[%d] = (uint64_t)(uintptr_t)%s;' % (k, n))
+            elif t.is_float():
+                if t.base == 'f32':
+                    A('    { union { float v; uint32_t u; } c%d; c%d.v = %s;'
+                      ' rv[%d] = (uint64_t)c%d.u; }' % (k, k, n, k, k))
+                else:
+                    A('    { union { double v; uint64_t u; } c%d; c%d.v = %s;'
+                      ' rv[%d] = c%d.u; }' % (k, k, n, k, k))
+            elif t.base in ('i32', 'i8', 'i16', 'i64'):
+                A('    rv[%d] = (uint64_t)(int64_t)%s;' % (k, n))
+            else:
+                A('    rv[%d] = (uint64_t)%s;' % (k, n))
         if opaque_calls:
             A('    if (opq_f(GetTickCount())) { dec_jpeg_idct(); dec_png_crc(); dec_huff_walk(); }')
-        A('    vmx_run(%d, rv);' % i)
+        if fn.variadic:
+            A('    vmx_run_v(%d, rv, vbuf, (unsigned)%s);' % (i, var_nv))
+        else:
+            A('    vmx_run(%d, rv);' % i)
         if ret.base == 'void' and ret.ptr == 0:
             A('    (void)rv[0];')
         elif ret.ptr:
             A('    return (%s)(uintptr_t)rv[0];' % ty_c(ret))
+        elif ret.is_float():
+            if ret.base == 'f32':
+                A('    { union { float v; uint32_t u; } r; r.u = '
+                  '(uint32_t)rv[0]; return r.v; }')
+            else:
+                A('    { union { double v; uint64_t u; } r; r.u = rv[0];'
+                  ' return r.v; }')
         elif ret.base in ('u32', 'u16', 'u8'):
             A('    return (%s)rv[0];' % ty_c(ret))
         elif ret.base in ('i32', 'i8', 'i16', 'i64'):
